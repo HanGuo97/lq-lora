@@ -71,7 +71,7 @@ lora_utils.transform_lora_layers(
 
 ### Saving Quantized Models
 
-Note that HuggingFace's PEFT library only saves the adapeter parameters. Since LQ-LoRA additionally changes the base model parameters, we need to save the entire weights of the model.
+Note that HuggingFace's PEFT library only saves the adapter parameters. Since LQ-LoRA additionally changes the base model parameters, we need to save the entire weights of the model.
 
 ```python
 state_dict = model.state_dict()
