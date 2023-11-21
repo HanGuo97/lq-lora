@@ -1,4 +1,4 @@
-# LQ-LoRA: Low-rank plus Quantized Matrix Decomposition for Efficient Language Model Finetuning [[Paper]()]
+# LQ-LoRA: Low-rank plus Quantized Matrix Decomposition for Efficient Language Model Finetuning [[Paper](https://arxiv.org/abs/2311.12023)]
 
 ## Installation
 
@@ -67,6 +67,18 @@ lora_utils.transform_lora_layers(
     model=model,
     model_name=f"llama-2-{model_size}/lpq-64/{data},budget={budget}",
     device="cuda")
+```
+
+### Saving Quantized Models
+
+Note that HuggingFace's PEFT library only saves the adapeter parameters. Since LQ-LoRA additionally changes the base model parameters, we need to save the entire weights of the model.
+
+```python
+state_dict = model.state_dict()
+file_name = os.path.join(
+    output_dir,
+    "full_model.pth")
+torch.save(state_dict, file_name)
 ```
 
 ### Loading Quantized Models
