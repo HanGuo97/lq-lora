@@ -1,0 +1,30 @@
+# General
+mypy
+click
+wandb
+numpy
+pandas
+optree>=0.9.1
+overrides
+matplotlib
+scikit-learn
+
+# Jupyter
+jupyterlab
+ipywidgets
+line_profiler
+
+# HuggingFace
+peft==0.5.0
+datasets
+evaluate
+accelerate
+transformers==4.34.1
+sentencepiece
+
+# Custom
+ray[air]
+gurobipy
+jsonlines
+jaxtyping
+bitsandbytes
