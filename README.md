@@ -46,8 +46,6 @@ bash scripts/setup.sh
 
 ### Downloading Data for Quantization
 
-TODO.
-
 After downloading the files, please update `FILE_NAMES_DICT` in `models/allocation_utils` accordingly.
 
 ### Applying Quantization
@@ -108,7 +106,7 @@ model = lora_utils.prepare_model_for_lora(
 
 
 ## Todos
-- [ ] Upload the artifacts
+- [X] Upload the artifacts
 - [ ] We use a legacy version of the (de)quantizaton implementation. We will update the code to use the latest version of the (de)quantization implementation.
 
 
