@@ -1,5 +1,16 @@
 # LQ-LoRA: Low-rank plus Quantized Matrix Decomposition for Efficient Language Model Finetuning [[Paper](https://arxiv.org/abs/2311.12023)]
 
+## Changelog
+- 20231215: Uploaded artifacts.
+
+## Artifacts
+- Model checkpoint (and training logs) for LLaMA-2 7B with LQ-LoRA (2.75-bits, 64-rank, Fisher) [[link]](https://huggingface.co/hanguo/lq-lora/tree/main/output_c4wiki_lpq_20231022_ranks64_7b_c4_2.75)
+- Model checkpoint (and training logs) for LLaMA-2 70B with LQ-LoRA (2.75-bits, 64-rank, Fisher) [[link]](https://huggingface.co/hanguo/lq-lora/tree/main/output_c4wiki_lpq_20231022_ranks64_70b_c4_2.75)
+- Pre-computed ILP data for LLaMA-2 7B [[link]](https://huggingface.co/hanguo/lq-lora/tree/main/ilp_data_fp32)
+- Pre-computed ILP data for LLaMA-2 70B [[link]](https://huggingface.co/hanguo/lq-lora/tree/main/ilp_data_bf16)
+- Fisher Information for LLaMA-2 7B [[link]](https://huggingface.co/hanguo/lq-lora/tree/main/fisher_dict_fp32)
+- Fisher Information for LLaMA-2 70B -> file over the size limit, please contact us!
+
 ## Installation
 
 1. Clone the repo
