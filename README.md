@@ -1,6 +1,7 @@
 # LQ-LoRA: Low-rank plus Quantized Matrix Decomposition for Efficient Language Model Finetuning [[Paper](https://arxiv.org/abs/2311.12023)]
 
 ## Changelog
+- 20240121: Deprecated the legacy dequantization, and included additional evaluation.
 - 20231215: Uploaded artifacts.
 
 ## Artifacts
@@ -107,7 +108,7 @@ model = lora_utils.prepare_model_for_lora(
 
 ## Todos
 - [X] Upload the artifacts
-- [ ] We use a legacy version of the (de)quantizaton implementation. We will update the code to use the latest version of the (de)quantization implementation.
+- [X] We use a legacy version of the (de)quantizaton implementation. We will update the code to use the latest version of the (de)quantization implementation.
 
 
 ## Acknowledgement
