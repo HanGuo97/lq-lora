@@ -1,10 +1,11 @@
-
+import math
+import enum
+import click
 import torch
 from dataclasses import dataclass
 from typing import Tuple, Dict
 from typing_extensions import Self
 from pytorch_quantization import tensor_quant
-
 
 from models import misc_utils
 from models import packbits_utils
@@ -324,6 +325,17 @@ class NFDoubleQuantizedTensorContainer(tensor_container_utils.TensorContainer):
         }
 
 
+class NumBits(enum.Enum):
+    # When compiled with dynamism, `torch.compile` will
+    # treat `_num_bits` (integer) as a symbolic argument.
+    # However, we want to treat this argument as a static
+    # argument. So we use `NumBits` to wrap around it.
+    NUM_BITS_2 = 2
+    NUM_BITS_3 = 3
+    NUM_BITS_4 = 4
+    NUM_BITS_8 = 8
+
+
 @dataclass
 class NFDoubleQuantizedTensorContainer2(tensor_container_utils.TensorContainer):
     # This is an optimized version of the previous version. Note that
@@ -335,12 +347,12 @@ class NFDoubleQuantizedTensorContainer2(tensor_container_utils.TensorContainer):
     qscales_packed: packbits_utils.PackedBinaryTensorType
     qscales_offset: torch.Tensor
     qscales_qscales: torch.Tensor
-    qscales_num_bits: int
+    qscales_num_bits: NumBits
 
     qtensor_map: torch.Tensor
     qtensor_shape: Tuple
     qtensor_packed: packbits_utils.PackedBinaryTensorType
-    qtensor_num_bits: int
+    qtensor_num_bits: NumBits
 
     @staticmethod
     def get_uint_max_bound(
@@ -358,7 +370,7 @@ class NFDoubleQuantizedTensorContainer2(tensor_container_utils.TensorContainer):
         # int32, [block_sizes[0], block_sizes[1], 1]
         qscales = packbits_utils.unpack_integer_tensors_2(
             packed_tensor=self.qscales_packed,
-            num_bits=self.qscales_num_bits,
+            num_bits=self.qscales_num_bits.value,
             shape=(self.block_sizes[0],
                    self.block_sizes[1],
                    1))  # expand last dimension
@@ -368,12 +380,17 @@ class NFDoubleQuantizedTensorContainer2(tensor_container_utils.TensorContainer):
         qscales = qscales.to(dtype=torch.float32)
         # float32, [block_sizes[0], 1, 1]
         qscales_scales = self.qscales_qscales.to(dtype=torch.float32)
+        # float32, [block_sizes[0], block_sizes[1], 1]
+        qscales_scales = torch.broadcast_to(
+            qscales_scales,
+            qscales.shape)
 
         max_bound = self.get_uint_max_bound(
-            num_bits=self.qscales_num_bits,
+            num_bits=self.qscales_num_bits.value,
             unsigned=True,
-            device=self.qscales_packed.device)
+            device=qscales_scales.device)
 
+        # qscales_offset + qscales * qscales_scales / max_bound
         # float32, [block_sizes[0], block_sizes[1], 1]
         scales = torch.addcmul(
             self.qscales_offset,
@@ -385,12 +402,12 @@ class NFDoubleQuantizedTensorContainer2(tensor_container_utils.TensorContainer):
         # int32, [*block_sizes]
         qtensor = packbits_utils.unpack_integer_tensors_2(
             packed_tensor=self.qtensor_packed,
-            num_bits=self.qtensor_num_bits,
+            num_bits=self.qtensor_num_bits.value,
             shape=self.block_sizes)
-        # float, [*block_sizes]
+        # float32, [*block_sizes]
         tensor = self.qtensor_map[qtensor]
         tensor = tensor * scales
-        # float, [*qtensor_shape]
+        # float32, [*qtensor_shape]
         tensor = tensor.view(self.qtensor_shape)
         return tensor
 
@@ -492,27 +509,51 @@ def convert_v1_to_v2(container: NFDoubleQuantizedTensorContainer) -> NFDoubleQua
             raise ValueError
         if tensor.min() < bits_min:
             raise ValueError
+
+        # packing requires tensors in `uint8` dtype
+        tensor_uint8 = tensor.to(dtype=torch.uint8)
+        if not (tensor_uint8.to(dtype=tensor.dtype) == tensor).all():
+            raise ValueError
         return packbits_utils.pack_integer_tensors_2(
-            # packing requires tensors in `uint8` dtype
-            tensor=tensor.to(dtype=torch.uint8),
+            tensor=tensor_uint8,
             num_bits=num_bits)
 
+    # simply materialize and re-pack these tensors
     qtensor_packed = _pack_to_int32(
         tensor=container.ctensor.to_tensor(),
         num_bits=container.ctensor.num_bits)
     qscales_packed = _pack_to_int32(
         tensor=container.cscales.ctensor.to_tensor(),
         num_bits=container.cscales.ctensor.num_bits)
+
+    # [-1, block_size_1, block_size_0]
+    block_sizes = container.median_shape
+    if len(block_sizes) != 3:
+        raise ValueError
+
+    if container.ctensor.dtype != torch.int64:
+        raise ValueError
+    if math.prod(container.ctensor.shape) != math.prod(block_sizes):
+        raise ValueError
+    if container.cscales.ctensor.dtype != torch.float32:
+        raise ValueError
+    if container.cscales.ctensor.shape != (block_sizes[0], block_sizes[1], 1):
+        raise ValueError
+    if container.cscales.cscales.dtype != torch.float32:
+        raise ValueError
+    if container.cscales.cscales.qtensor.shape != (block_sizes[0], 1, 1):
+        raise ValueError
+
     return NFDoubleQuantizedTensorContainer2(
-        block_sizes=container.median_shape,
+        block_sizes=block_sizes,
         qscales_packed=qscales_packed,
         qscales_offset=container.offset,
         qscales_qscales=container.cscales.cscales.qtensor,
-        qscales_num_bits=container.cscales.ctensor.num_bits,
+        qscales_num_bits=NumBits(container.cscales.ctensor.num_bits),
         qtensor_map=container.qscheme.values,
         qtensor_shape=container.ctensor.shape,
         qtensor_packed=qtensor_packed,
-        qtensor_num_bits=container.ctensor.num_bits)
+        qtensor_num_bits=NumBits(container.ctensor.num_bits))
 
 
 # @torch.compile
@@ -520,7 +561,7 @@ def quantize(
     A: torch.Tensor,
     method: str,
     qconfig: QuantConfig,
-    legacy: bool = True,
+    legacy: bool = False,
 ) -> tensor_container_utils.QuantizedTensor:
 
     misc_utils.swarn(
@@ -550,15 +591,17 @@ def quantize(
     raise ValueError
 
 
-def patch_model_for_fast_dequantization_(model: torch.nn.Module) -> None:
-    for name, qparam in model.named_parameters():
-        if not isinstance(qparam, tensor_container_utils.QuantizedTensor):
-            continue
+def patch_qtensor_for_fast_dequantization_(
+    qtensor: tensor_container_utils.QuantizedTensor,
+) -> None:
+    if not isinstance(qtensor, tensor_container_utils.QuantizedTensor):
+        raise TypeError
+    if not isinstance(qtensor._container, NFDoubleQuantizedTensorContainer):
+        raise TypeError
+    if not all([
+        qtensor._transpose is False,
+        qtensor._compute_dtype is None]):
+        raise ValueError
 
-        if not all([
-            qparam._transpose is False,
-            qparam._compute_dtype is None]):
-            raise ValueError
-
-        print(f"[Fast Dequantization]: {name}")
-        qparam._container = convert_v1_to_v2(qparam._container)
+    qtensor._container = convert_v1_to_v2(
+        container=qtensor._container)

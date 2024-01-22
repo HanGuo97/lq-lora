@@ -261,3 +261,35 @@ WANDB_PROJECT="20221007" CUDA_VISIBLE_DEVICES="0,1,2,3" torchrun --nproc_per_nod
     --lora_model_name "llama-2-${size}/lpq-64/${data},budget=${budget}" \
     --lora_dropout 0.0 \
     --lora_config "lora-lpq"
+
+
+# --------------------------------------------------------------------------------
+
+
+size="70b"
+CUDA_VISIBLE_DEVICES="0,1,2,3" python run_lm_eval.py \
+    --model_name_or_path /export/share3/experiments/20230731/llama-2/Llama-2-${size}-hf \
+    --base_output_path /workspace/main/output_lm_eval/base_${size} &
+
+sleep 60m
+
+size="7b"
+CUDA_VISIBLE_DEVICES="4" python run_lm_eval.py \
+    --model_name_or_path /export/share3/experiments/20230731/llama-2/Llama-2-${size}-hf \
+    --base_output_path /workspace/main/output_lm_eval/base_${size} &
+
+sleep 60m
+
+size="70b"
+CUDA_VISIBLE_DEVICES="5" python run_lm_eval.py \
+    --model_name_or_path /export/share3/experiments/20230731/llama-2/Llama-2-${size}-hf \
+    --base_output_path /workspace/main/output_lm_eval/lqlora_${size} \
+    --checkpoint_dir "/export/share2/experiments/20231026/4ce0df614d10/output_c4wiki_lpq_20231022_ranks64_70b_c4_2.75/" &
+
+sleep 60m
+
+size="7b"
+CUDA_VISIBLE_DEVICES="6" python run_lm_eval.py \
+    --model_name_or_path /export/share3/experiments/20230731/llama-2/Llama-2-${size}-hf \
+    --base_output_path /workspace/main/output_lm_eval/lqlora_${size} \
+    --checkpoint_dir "/export/share2/experiments/20231025/f39a6c538c5a/output_c4wiki_lpq_20231022_ranks64_7b_c4_2.75/" &

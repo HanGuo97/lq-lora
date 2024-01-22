@@ -338,9 +338,11 @@ def unpack_integer_tensors_2(
         raise ValueError
 
     # [..., num_packed]
-    # b=2,4,8: [..., 32 / b], numel = prod(shape)    
+    # b=2,4,8: [..., 32 / b], numel = prod(shape)
     # b=3    : [..., 32]    , numel = prod(shape) * b
     unpacked_tensor = packed_tensor.contiguous()
+    # explicit unsqueezing + broadcasting, as the
+    # compiler might not figure that out
     unpacked_tensor = unpacked_tensor.unsqueeze(dim=-1)
     unpacked_tensor = unpacked_tensor.broadcast_to(
         *packed_tensor.shape,
@@ -348,16 +350,103 @@ def unpack_integer_tensors_2(
 
     if num_bits in [2, 4, 8]:
         # Apply masks and right shift
+        # Example 4-bit case,
+        # packed_tensor[i] = hhhh gggg ffff eeee dddd cccc bbbb aaaa
+        # after the unsqueezing + broadcasting and before the shifts:
+        # unpacked_tensor[i, :] = [
+        #   hhhh gggg ffff eeee dddd cccc bbbb aaaa,
+        #   hhhh gggg ffff eeee dddd cccc bbbb aaaa,
+        #   hhhh gggg ffff eeee dddd cccc bbbb aaaa,
+        #   hhhh gggg ffff eeee dddd cccc bbbb aaaa,
+        #   hhhh gggg ffff eeee dddd cccc bbbb aaaa,
+        #   hhhh gggg ffff eeee dddd cccc bbbb aaaa,
+        #   hhhh gggg ffff eeee dddd cccc bbbb aaaa,
+        #   hhhh gggg ffff eeee dddd cccc bbbb aaaa,
+        # ]
+        # after the shifts (`.` could be 0/1 because of arithmetic shift)
+        # unpacked_tensor[i, :] = [
+        #   hhhh gggg ffff eeee dddd cccc bbbb aaaa,
+        #   .... hhhh gggg ffff eeee dddd cccc bbbb,
+        #   .... .... hhhh gggg ffff eeee dddd cccc,
+        #   .... .... .... hhhh gggg ffff eeee dddd,
+        #   .... .... .... .... hhhh gggg ffff eeee,
+        #   .... .... .... .... .... hhhh gggg ffff,
+        #   .... .... .... .... .... .... hhhh gggg,
+        #   .... .... .... .... .... .... .... hhhh,
+        # ]
         unpacked_tensor = unpacked_tensor >> bconfig.shifts
+        # unpacked_tensor[i, :] = [
+        #   0000 0000 0000 0000 0000 0000 0000 aaaa,
+        #   0000 0000 0000 0000 0000 0000 0000 bbbb,
+        #   0000 0000 0000 0000 0000 0000 0000 cccc,
+        #   0000 0000 0000 0000 0000 0000 0000 dddd,
+        #   0000 0000 0000 0000 0000 0000 0000 eeee,
+        #   0000 0000 0000 0000 0000 0000 0000 ffff,
+        #   0000 0000 0000 0000 0000 0000 0000 gggg,
+        #   0000 0000 0000 0000 0000 0000 0000 hhhh,
+        # ]
         unpacked_tensor = unpacked_tensor & bconfig.mask
 
     elif num_bits == 3:
-        # [-1, 3, 32]
+        # [-1, 32] -> [-1, 3, 32]
+        # Example:
+        # packed_tensor[3 * i : 4 * i] = [
+        #   .... .... .... .... .... .... hgfe dcba,  --> 1st bit
+        #   .... .... .... .... .... .... hgfe dcba,  --> 2nd bit
+        #   .... .... .... .... .... .... hgfe dcba,  --> 3rd bit
+        # ]
+        # unpacked_tensor[i, :, :] = [
+        #   [
+        #       .... .... .... .... .... .... hgfe dcba,  --> 1st bit
+        #       .... .... .... .... .... .... hgfe dcba,  --> 1st bit
+        #       .... .... .... .... .... .... hgfe dcba,  --> 1st bit
+        #       ...,
+        #   ],
+        #   [
+        #       .... .... .... .... .... .... hgfe dcba,  --> 2nd bit
+        #       .... .... .... .... .... .... hgfe dcba,  --> 2nd bit
+        #       .... .... .... .... .... .... hgfe dcba,  --> 2nd bit
+        #       ...,
+        #   ],
+        #   [
+        #       .... .... .... .... .... .... hgfe dcba,  --> 3rd bit
+        #       .... .... .... .... .... .... hgfe dcba,  --> 3rd bit
+        #       .... .... .... .... .... .... hgfe dcba,  --> 3rd bit
+        #       ...,
+        #   ]
+        # ]
         unpacked_tensor = unpacked_tensor.view(-1, num_bits, bconfig.num_packed)
+        # unpacked_bits_0[i, :] = [
+        #   0000 0000 0000 0000 0000 0000 0000 000a,  --> 1st bit
+        #   0000 0000 0000 0000 0000 0000 0000 000b,  --> 1st bit
+        #   0000 0000 0000 0000 0000 0000 0000 000c,  --> 1st bit
+        #   ...,
+        # ]
+        # Note that left shift is the same between logical and arithmetic, and just fill them
+        # with zeros. So we don't need to proceed it by more masking.
         unpacked_bits_0 = ((unpacked_tensor[:, 0, :] >> bconfig.shifts) & bconfig.mask) << 0
+        # unpacked_bits_1[i, :] = [
+        #   0000 0000 0000 0000 0000 0000 0000 00a0,  --> 2nd bit
+        #   0000 0000 0000 0000 0000 0000 0000 00b0,  --> 2nd bit
+        #   0000 0000 0000 0000 0000 0000 0000 00c0,  --> 2nd bit
+        #   ...,
+        # ]
         unpacked_bits_1 = ((unpacked_tensor[:, 1, :] >> bconfig.shifts) & bconfig.mask) << 1
+        # unpacked_bits_2[i, :] = [
+        #   0000 0000 0000 0000 0000 0000 0000 0a00,  --> 3rd bit
+        #   0000 0000 0000 0000 0000 0000 0000 0b00,  --> 3rd bit
+        #   0000 0000 0000 0000 0000 0000 0000 0c00,  --> 3rd bit
+        #   ...,
+        # ]
         unpacked_bits_2 = ((unpacked_tensor[:, 2, :] >> bconfig.shifts) & bconfig.mask) << 2
-        # [...abc] = [...00c] OR [...0b0] OR [...a00]
+        # [...zyx] = [...00x] OR [...0y0] OR [...z00]
+        # unpacked_tensor[i, :] = [
+        #   0000 0000 0000 0000 0000 0000 0000 0aaa,
+        #   0000 0000 0000 0000 0000 0000 0000 0bbb,
+        #   0000 0000 0000 0000 0000 0000 0000 0ccc,
+        #   ...,
+        # ]
+        # [-1, 3, 32] -> [-1, 32]
         unpacked_tensor = unpacked_bits_0 | unpacked_bits_1 | unpacked_bits_2
 
     else:

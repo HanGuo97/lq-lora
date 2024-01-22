@@ -306,7 +306,9 @@ def apply_three_tensor_op(
             kwargs=kwargs)
 
 
-@torch.compile(fullgraph=True)
+# PyTorch >= 2.1 fallbacks into `dynamic=True` mode semi-automatically.
+# For maximal performance, we should compile without dynamism.
+@torch.compile(fullgraph=True, dynamic=False)
 def _compiled_three_tensor_op(
     func: OpOverload,
     maybe_tensor_1: Union[torch.Tensor, torch.nn.Parameter, Dict[str, Any]],

@@ -21,6 +21,7 @@ from typing import List, Optional, Union, Dict, Any, cast
 from models import misc_utils
 from models import allocation_utils as allocation_utils_LLaMA
 from models import allocation_utils_2 as allocation_utils_RoBERTa
+from models import quantization_utils_2
 from models import tensor_container_utils
 from models.lq_utils import (
     QuantConfig,
@@ -124,9 +125,10 @@ def load_peft_model(
     # Unfortunately, `load_state_dict` does in-place copy behind the scene, but we
     # cannot in-place copy a `QuantizedTensor` into a `torch.Tensor`. Instead, we will
     # first do out-of-place assignment (so they are compatible), before in-place copy.
-    _transform_lora_layers_for_loading(
+    transform_lora_layers_for_loading(
         model=peft_model,
-        state_dict=state_dict)
+        state_dict=state_dict,
+        device="cuda")
 
     # Note: PyTorch 2.1 has a new feature that allows us to load a state dict via assignment,
     # `new_model.load_state_dict(state_dict, assign=True)`. Unfortunately, this is still 
@@ -145,27 +147,33 @@ def load_peft_model(
     return peft_model
 
 
-def _transform_lora_layers_for_loading(
+def transform_lora_layers_for_loading(
     model: PeftModelForCausalLM,
     state_dict: Dict[str, torch.Tensor],
+    device: Optional[torch.device] = None,
 ) -> None:
     if not isinstance(model, PeftModelForCausalLM):
         raise TypeError
+
     for name, submodule in model.named_modules():
+
         # This implicitly assumes that `LoraLayer`
         # do not include `LoraLayer` within the module.
         if isinstance(submodule, lora.LoraLayer):
-            if type(submodule) is lora.Linear:
-                qweight = state_dict[f"{name}.weight"]
-                if not isinstance(
-                    qweight,
-                    tensor_container_utils.QuantizedTensor):
-                    raise TypeError
-                replace_weight_(
-                    module=submodule,
-                    new_weight=qweight)
-            else:
-                raise TypeError
+
+            # We will move the submodule to the GPU first
+            # before we do the transformation. This is
+            # because after transformation, moving data
+            # to GPU is not supported yet.
+            if device is not None:
+                # This is in-place
+                submodule.to(device=device)
+
+            transform_lora_layer_for_loading(
+                name=name,
+                patch=True,
+                module=submodule,
+                qweight=state_dict[f"{name}.weight"])
 
 
 def _checkpoint_handle_mismatched_embedding_shape_for_LLaMA(
@@ -479,6 +487,30 @@ def transform_lora_layer(
         raise TypeError
 
 
+@torch.no_grad()
+def transform_lora_layer_for_loading(
+    name: str,
+    patch: bool,
+    module: lora.LoraLayer,
+    qweight: tensor_container_utils.QuantizedTensor,
+) -> None:
+
+    if not isinstance(qweight, tensor_container_utils.QuantizedTensor):
+        raise TypeError
+
+    if patch is True:
+        click.secho(f"[Fast Dequantization]: {name}", fg="blue")
+        quantization_utils_2.patch_qtensor_for_fast_dequantization_(
+            qtensor=qweight)
+
+    if type(module) is lora.Linear:
+        replace_weight_(
+            module=module,
+            new_weight=qweight)
+    else:
+        raise TypeError
+
+
 def assert_lora_Linear_layer(
     module: lora.Linear,
 ) -> None:
@@ -501,7 +533,7 @@ def assert_lora_Linear_layer(
 
 
 def replace_weight_(
-    module: lora.Linear,
+    module: Union[lora.Linear, torch.nn.Linear],
     new_weight: Union[torch.Tensor, tensor_container_utils.QuantizedTensor],
 ) -> None:
     if isinstance(new_weight, tensor_container_utils.QuantizedTensor):
@@ -514,3 +546,42 @@ def replace_weight_(
             requires_grad=module.weight.requires_grad)
     else:
         module.weight.copy_(new_weight)
+
+
+def transform_lora_adapters_nf8(model: PeftModelForCausalLM) -> None:
+    if not isinstance(model, PeftModelForCausalLM):
+        raise TypeError
+
+    nf8_qconfig = QuantConfig(
+        num_bits=8,
+        num_bits_0=8,
+        num_bits_1="fp32",
+        block_size_0=64,
+        block_size_1=256)
+
+    click.secho(f"Transforming LoRA adapters with NF8 quantization", fg="blue")
+    for name, submodule in model.named_modules():
+        # This implicitly assumes that `LoraLayer`
+        # do not include `LoraLayer` within the module.
+        if isinstance(submodule, lora.LoraLayer):
+            print(f"{name:<50}")
+            with torch.no_grad():
+                if type(submodule) is lora.Linear:
+                    submodule_lora_A = submodule.lora_A[submodule.active_adapter]
+                    submodule_lora_B = submodule.lora_B[submodule.active_adapter]
+                    submodule_lora_A.weight.requires_grad_(False)
+                    submodule_lora_B.weight.requires_grad_(False)
+                    qLA = maybe_sparsify_or_quantize(
+                        submodule_lora_A.weight,
+                        qconfig=nf8_qconfig)
+                    qLB = maybe_sparsify_or_quantize(
+                        submodule_lora_B.weight,
+                        qconfig=nf8_qconfig)
+                    replace_weight_(
+                        module=submodule_lora_A,
+                        new_weight=qLA)
+                    replace_weight_(
+                        module=submodule_lora_B,
+                        new_weight=qLB)
+                else:
+                    raise TypeError
